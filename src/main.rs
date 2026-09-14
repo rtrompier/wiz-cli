@@ -87,7 +87,7 @@ enum Commands {
         #[arg(long, long_help = commands::close::REASON_HELP)]
         reason: String,
 
-        /// Add this note before changing status
+        /// Add this note with the status change (required by the API for a REJECTED close)
         #[arg(long)]
         note: Option<String>,
 

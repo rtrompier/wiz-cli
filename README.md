@@ -122,7 +122,7 @@ Use `--all` to ignore `-n` and fetch every page. The CLI requests at most 500 re
 
 Each mutation command accepts one ID, comma-separated IDs, or `-` to read newline-separated IDs from standard input.
 
-Close an issue and add its audit note first:
+Close an issue with its audit note:
 
 ```console
 wiz-cli close ISSUE-123 --reason WONT_FIX --note "Risk accepted by the security review"
@@ -157,11 +157,11 @@ Every close operation requires `write:issue_ignore`. The reason determines the t
 | `FALSE_POSITIVE` | `REJECTED` | Non-threat issue |
 | `EXCEPTION` | `REJECTED` | Non-threat issue |
 | `WONT_FIX` | `REJECTED` | Non-threat issue |
-| `NOT_MALICIOUS_THREAT` | `REJECTED` | Threat only |
-| `SECURITY_TEST_THREAT` | `REJECTED` | Threat only |
-| `PLANNED_ACTION_THREAT` | `REJECTED` | Threat only |
-| `INCONCLUSIVE_THREAT` | `REJECTED` | Threat only |
 | `MALICIOUS_THREAT` | `RESOLVED` | Threat only |
+| `NOT_MALICIOUS_THREAT` | `RESOLVED` | Threat only |
+| `SECURITY_TEST_THREAT` | `RESOLVED` | Threat only |
+| `PLANNED_ACTION_THREAT` | `RESOLVED` | Threat only |
+| `INCONCLUSIVE_THREAT` | `RESOLVED` | Threat only |
 | `OBJECT_DELETED` | `RESOLVED` | Non-threat issue |
 | `ISSUE_FIXED` | `RESOLVED` | Non-threat issue |
 | `CONTROL_CHANGED` | `RESOLVED` | Non-threat issue |
@@ -169,6 +169,8 @@ Every close operation requires `write:issue_ignore`. The reason determines the t
 | `CONTROL_DELETED` | `RESOLVED` | Non-threat issue |
 | `DETECTION_EXPIRED` | `RESOLVED` | Non-threat issue |
 | `SEVERITY_CHANGED` | `RESOLVED` | Non-threat issue |
+
+Every threat reason maps to `RESOLVED`. The API refuses `REJECTED` for a `THREAT_DETECTION` issue with `issue rejection is not supported for threat issues`, whatever the reason.
 
 On a real close, the CLI fetches all requested issue types in one query. It rejects a threat-only reason for a non-threat issue and a non-threat reason for a threat. Dry-run skips this network validation.
 
@@ -178,7 +180,7 @@ On a real close, the CLI fetches all requested issue types in one query. It reje
 wiz-cli close ISSUE-123 --reason EXCEPTION --rejection-expires-days 90
 ```
 
-When `--note` is present, the CLI creates the note before it changes status. If note creation fails, it leaves that issue open.
+`--note` travels inside the patch as `patch.note`, so one `updateIssue` mutation carries both the status change and the note. The API requires that note for a `REJECTED` close and answers `A note is required for rejection` without it. A failed close therefore leaves no note behind.
 
 ### Batch from a listing
 

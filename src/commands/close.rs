@@ -8,7 +8,7 @@ use crate::time::{format_timestamp, unix_now};
 
 use super::Operation;
 
-pub const REASON_HELP: &str = "Resolution reason.\n\nGeneral issue reasons:\n  OBJECT_DELETED, ISSUE_FIXED, CONTROL_CHANGED, CONTROL_DISABLED, CONTROL_DELETED,\n  FALSE_POSITIVE, EXCEPTION, WONT_FIX, DETECTION_EXPIRED, SEVERITY_CHANGED\n\nThreat-only reasons:\n  MALICIOUS_THREAT, NOT_MALICIOUS_THREAT, SECURITY_TEST_THREAT,\n  PLANNED_ACTION_THREAT, INCONCLUSIVE_THREAT\n\nFALSE_POSITIVE, EXCEPTION, WONT_FIX, NOT_MALICIOUS_THREAT, SECURITY_TEST_THREAT,\nPLANNED_ACTION_THREAT, and INCONCLUSIVE_THREAT map to REJECTED. Every other reason\nmaps to RESOLVED.";
+pub const REASON_HELP: &str = "Resolution reason.\n\nGeneral issue reasons:\n  OBJECT_DELETED, ISSUE_FIXED, CONTROL_CHANGED, CONTROL_DISABLED, CONTROL_DELETED,\n  FALSE_POSITIVE, EXCEPTION, WONT_FIX, DETECTION_EXPIRED, SEVERITY_CHANGED\n\nThreat-only reasons:\n  MALICIOUS_THREAT, NOT_MALICIOUS_THREAT, SECURITY_TEST_THREAT,\n  PLANNED_ACTION_THREAT, INCONCLUSIVE_THREAT\n\nFALSE_POSITIVE, EXCEPTION and WONT_FIX map to REJECTED. Every other reason maps to\nRESOLVED, including every threat-only reason: the API refuses REJECTED for threat\nissues.";
 
 const REASONS: &[&str] = &[
     "OBJECT_DELETED",
@@ -27,15 +27,7 @@ const REASONS: &[&str] = &[
     "INCONCLUSIVE_THREAT",
     "SEVERITY_CHANGED",
 ];
-const REJECTED_REASONS: &[&str] = &[
-    "FALSE_POSITIVE",
-    "EXCEPTION",
-    "WONT_FIX",
-    "NOT_MALICIOUS_THREAT",
-    "SECURITY_TEST_THREAT",
-    "PLANNED_ACTION_THREAT",
-    "INCONCLUSIVE_THREAT",
-];
+const REJECTED_REASONS: &[&str] = &["FALSE_POSITIVE", "EXCEPTION", "WONT_FIX"];
 const THREAT_REASONS: &[&str] = &[
     "MALICIOUS_THREAT",
     "NOT_MALICIOUS_THREAT",
@@ -47,6 +39,7 @@ const THREAT_REASONS: &[&str] = &[
 pub fn build_operation(
     id: &str,
     reason: &str,
+    note: Option<&str>,
     rejection_expires_days: Option<u64>,
     now: i64,
 ) -> Result<Operation, String> {
@@ -66,6 +59,9 @@ pub fn build_operation(
         ("status".to_string(), json!(status)),
         ("resolutionReason".to_string(), json!(reason)),
     ]);
+    if let Some(text) = note {
+        patch.insert("note".to_string(), Value::String(text.to_string()));
+    }
     if let Some(days) = rejection_expires_days {
         let seconds = days
             .checked_mul(86_400)
@@ -96,11 +92,10 @@ pub async fn run(
     let ids = read_ids(ids_argument)?;
     let normalized_reason = normalize_reason(reason)?;
     let now = unix_now()?;
-    let status_operations = ids
+    let operations = ids
         .iter()
-        .map(|id| build_operation(id, &normalized_reason, rejection_expires_days, now))
+        .map(|id| build_operation(id, &normalized_reason, note, rejection_expires_days, now))
         .collect::<Result<Vec<_>, _>>()?;
-    let operations = interleave_operations(&ids, note, &status_operations);
     if dry_run {
         return print_dry_run(&operations, human);
     }
@@ -115,7 +110,7 @@ pub async fn run(
     let mut results = Vec::new();
     let mut failures = 0;
 
-    for (id, status_operation) in ids.iter().zip(&status_operations) {
+    for (id, operation) in ids.iter().zip(&operations) {
         let Some(issue_type) = issue_types.get(id.as_str()) else {
             failures += 1;
             results.push(failure_result(
@@ -145,23 +140,8 @@ pub async fn run(
             continue;
         }
 
-        if let Some(note_text) = note {
-            let note_operation = super::note::build_operation(id, note_text);
-            match client
-                .graphql(note_operation.query, note_operation.variables)
-                .await
-            {
-                Ok(response) => results.push(success_result(id, "createIssueNote", response)),
-                Err(error) => {
-                    failures += 1;
-                    results.push(failure_result(id, "createIssueNote", &error));
-                    continue;
-                }
-            }
-        }
-
         match client
-            .graphql(status_operation.query, status_operation.variables.clone())
+            .graphql(operation.query, operation.variables.clone())
             .await
         {
             Ok(response) => results.push(success_result(id, "updateIssue", response)),
@@ -192,22 +172,6 @@ fn normalize_reason(reason: &str) -> Result<String, String> {
     }
 }
 
-fn interleave_operations(
-    ids: &[String],
-    note: Option<&str>,
-    status_operations: &[Operation],
-) -> Vec<Operation> {
-    let capacity = status_operations.len() * if note.is_some() { 2 } else { 1 };
-    let mut operations = Vec::with_capacity(capacity);
-    for (id, status_operation) in ids.iter().zip(status_operations) {
-        if let Some(text) = note {
-            operations.push(super::note::build_operation(id, text));
-        }
-        operations.push(status_operation.clone());
-    }
-    operations
-}
-
 fn success_result(id: &str, operation: &str, response: Value) -> Value {
     json!({ "id": id, "operation": operation, "success": true, "response": response })
 }
@@ -223,7 +187,7 @@ mod tests {
     #[test]
     fn builds_rejected_reason_variables() {
         assert_eq!(
-            build_operation("issue-1", "wont_fix", None, 1_700_000_000)
+            build_operation("issue-1", "wont_fix", None, None, 1_700_000_000)
                 .expect("valid close")
                 .variables,
             json!({
@@ -236,7 +200,7 @@ mod tests {
     #[test]
     fn builds_resolved_reason_variables() {
         assert_eq!(
-            build_operation("issue-1", "issue_fixed", None, 1_700_000_000)
+            build_operation("issue-1", "issue_fixed", None, None, 1_700_000_000)
                 .expect("valid close")
                 .variables,
             json!({
@@ -247,9 +211,47 @@ mod tests {
     }
 
     #[test]
+    fn builds_threat_reason_variables_as_resolved() {
+        for reason in THREAT_REASONS {
+            assert_eq!(
+                build_operation("issue-1", reason, None, None, 1_700_000_000)
+                    .expect("valid close")
+                    .variables,
+                json!({
+                    "issueId": "issue-1",
+                    "patch": { "status": "RESOLVED", "resolutionReason": reason }
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn builds_note_inside_the_patch() {
+        assert_eq!(
+            build_operation(
+                "issue-1",
+                "false_positive",
+                Some("known scanner"),
+                None,
+                1_700_000_000
+            )
+            .expect("valid close")
+            .variables,
+            json!({
+                "issueId": "issue-1",
+                "patch": {
+                    "status": "REJECTED",
+                    "resolutionReason": "FALSE_POSITIVE",
+                    "note": "known scanner"
+                }
+            })
+        );
+    }
+
+    #[test]
     fn builds_rejection_expiry_variables() {
         assert_eq!(
-            build_operation("issue-1", "exception", Some(90), 1_700_000_000)
+            build_operation("issue-1", "exception", None, Some(90), 1_700_000_000)
                 .expect("valid close")
                 .variables,
             json!({
@@ -261,5 +263,17 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn rejects_rejection_expiry_for_a_threat_reason() {
+        assert!(build_operation(
+            "issue-1",
+            "not_malicious_threat",
+            None,
+            Some(90),
+            1_700_000_000
+        )
+        .is_err());
     }
 }
