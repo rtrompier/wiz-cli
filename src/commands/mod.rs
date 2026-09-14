@@ -15,7 +15,7 @@ pub mod threat;
 pub mod threats;
 pub mod whoami;
 
-#[derive(Clone, Serialize)]
+#[derive(Serialize)]
 pub struct Operation {
     pub query: &'static str,
     pub variables: Value,

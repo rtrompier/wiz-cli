@@ -60,7 +60,7 @@ pub fn build_operation(
         ("resolutionReason".to_string(), json!(reason)),
     ]);
     if let Some(text) = note {
-        patch.insert("note".to_string(), Value::String(text.to_string()));
+        patch.insert("note".to_string(), json!(text));
     }
     if let Some(days) = rejection_expires_days {
         let seconds = days
@@ -110,7 +110,7 @@ pub async fn run(
     let mut results = Vec::new();
     let mut failures = 0;
 
-    for (id, operation) in ids.iter().zip(&operations) {
+    for (id, operation) in ids.iter().zip(operations) {
         let Some(issue_type) = issue_types.get(id.as_str()) else {
             failures += 1;
             results.push(failure_result(
@@ -140,10 +140,7 @@ pub async fn run(
             continue;
         }
 
-        match client
-            .graphql(operation.query, operation.variables.clone())
-            .await
-        {
+        match client.graphql(operation.query, operation.variables).await {
             Ok(response) => results.push(success_result(id, "updateIssue", response)),
             Err(error) => {
                 failures += 1;
@@ -185,29 +182,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_rejected_reason_variables() {
-        assert_eq!(
-            build_operation("issue-1", "wont_fix", None, None, 1_700_000_000)
-                .expect("valid close")
-                .variables,
-            json!({
-                "issueId": "issue-1",
-                "patch": { "status": "REJECTED", "resolutionReason": "WONT_FIX" }
-            })
-        );
-    }
+    fn builds_patch_variables() {
+        // (reason, note, rejection_expires_days, expected patch)
+        let cases = [
+            (
+                "wont_fix",
+                None,
+                None,
+                json!({ "status": "REJECTED", "resolutionReason": "WONT_FIX" }),
+            ),
+            (
+                "issue_fixed",
+                None,
+                None,
+                json!({ "status": "RESOLVED", "resolutionReason": "ISSUE_FIXED" }),
+            ),
+            (
+                "false_positive",
+                Some("known scanner"),
+                None,
+                json!({
+                    "status": "REJECTED",
+                    "resolutionReason": "FALSE_POSITIVE",
+                    "note": "known scanner"
+                }),
+            ),
+            (
+                "exception",
+                None,
+                Some(90),
+                json!({
+                    "status": "REJECTED",
+                    "resolutionReason": "EXCEPTION",
+                    "rejectionExpiredAt": "2024-02-12T22:13:20Z"
+                }),
+            ),
+        ];
 
-    #[test]
-    fn builds_resolved_reason_variables() {
-        assert_eq!(
-            build_operation("issue-1", "issue_fixed", None, None, 1_700_000_000)
-                .expect("valid close")
-                .variables,
-            json!({
-                "issueId": "issue-1",
-                "patch": { "status": "RESOLVED", "resolutionReason": "ISSUE_FIXED" }
-            })
-        );
+        for (reason, note, expiry, expected_patch) in cases {
+            assert_eq!(
+                build_operation("issue-1", reason, note, expiry, 1_700_000_000)
+                    .expect("valid close")
+                    .variables,
+                json!({ "issueId": "issue-1", "patch": expected_patch }),
+                "reason {reason}"
+            );
+        }
     }
 
     #[test]
@@ -226,47 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_note_inside_the_patch() {
-        assert_eq!(
-            build_operation(
-                "issue-1",
-                "false_positive",
-                Some("known scanner"),
-                None,
-                1_700_000_000
-            )
-            .expect("valid close")
-            .variables,
-            json!({
-                "issueId": "issue-1",
-                "patch": {
-                    "status": "REJECTED",
-                    "resolutionReason": "FALSE_POSITIVE",
-                    "note": "known scanner"
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn builds_rejection_expiry_variables() {
-        assert_eq!(
-            build_operation("issue-1", "exception", None, Some(90), 1_700_000_000)
-                .expect("valid close")
-                .variables,
-            json!({
-                "issueId": "issue-1",
-                "patch": {
-                    "status": "REJECTED",
-                    "resolutionReason": "EXCEPTION",
-                    "rejectionExpiredAt": "2024-02-12T22:13:20Z"
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_rejection_expiry_for_a_threat_reason() {
+    fn rejects_rejection_expiry_for_a_resolved_reason() {
         assert!(build_operation(
             "issue-1",
             "not_malicious_threat",

@@ -6,13 +6,13 @@ use crate::ids::read_ids;
 
 use super::Operation;
 
-pub const MUTATION: &str = r#"mutation CreateIssueNote($input: CreateIssueNoteInput!) {
+const MUTATION: &str = r#"mutation CreateIssueNote($input: CreateIssueNoteInput!) {
   createIssueNote(input: $input) {
     issueNote { id text createdAt user { id email } }
   }
 }"#;
 
-pub fn build_operation(id: &str, text: &str) -> Operation {
+fn build_operation(id: &str, text: &str) -> Operation {
     Operation {
         query: MUTATION,
         variables: json!({ "input": { "issueId": id, "text": text } }),
